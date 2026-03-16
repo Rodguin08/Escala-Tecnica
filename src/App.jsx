@@ -1,4 +1,10 @@
-import { useState, useRef, useMemo } from "react";
+import { useState, useRef, useMemo, useEffect, useCallback } from "react";
+
+function load(key, fallback) {
+  try { const v = localStorage.getItem(key); return v !== null ? JSON.parse(v) : fallback; }
+  catch { return fallback; }
+}
+function save(key, val) { try { localStorage.setItem(key, JSON.stringify(val)); } catch {} }
 
 const DEF_TEC = ["Rodrigo A", "Kelvin", "Cezar"];
 const DEF_APR = ["Luis Paulo", "Romerson", "Leonardo Branquelli", "Abraão e Isaac", "Ana Thiele", "Caetano"];
@@ -19,10 +25,9 @@ function genEvents(y, m) {
   const mm = String(m + 1).padStart(2, "0");
   for (let d = 1; d <= days; d++) {
     const dt = new Date(y, m, d);
-    const dow = dt.getDay(); // 0=Sun 5=Fri 6=Sat
+    const dow = dt.getDay();
     const dd = String(d).padStart(2, "0");
     const dateStr = `${dd}/${mm}`;
-    // Sort key: date * 10 + sub-order to keep Manhã before Noite
     const ts = d * 10;
     if (dow === 5) list.push({ id: `${y}-${mm}-${dd}_FN`, date: dateStr, d, dow, period: "Noite", day: "Sexta", evento: "Connect Adoles", gr: null, sort: ts + 1 });
     if (dow === 6) list.push({ id: `${y}-${mm}-${dd}_SN`, date: dateStr, d, dow, period: "Noite", day: "Sábado", evento: "Connect Jovens", gr: null, sort: ts + 1 });
@@ -47,11 +52,9 @@ function assignRota(events, tecs, aprs, y, m) {
   });
 }
 
-// Group by week Mon-Sun. Get the Monday of each event's week.
 function getMonday(y, m, d) {
   const dt = new Date(y, m, d);
-  const dow = dt.getDay(); // 0=Sun..6=Sat
-  // Monday = 1. If dow=0 (Sun), Monday was 6 days ago
+  const dow = dt.getDay();
   const diff = dow === 0 ? 6 : dow - 1;
   const mon = new Date(dt);
   mon.setDate(dt.getDate() - diff);
@@ -66,9 +69,7 @@ function groupWeeks(events, y, m) {
     if (!map.has(mk)) map.set(mk, []);
     map.get(mk).push(ev);
   });
-  return Array.from(map.entries())
-    .sort((a, b) => a[0].localeCompare(b[0]))
-    .map(([, evs]) => evs);
+  return Array.from(map.entries()).sort((a, b) => a[0].localeCompare(b[0])).map(([, evs]) => evs);
 }
 
 const TH = {
@@ -78,11 +79,11 @@ const TH = {
 };
 
 export default function App() {
-  const [year, setYear] = useState(2026);
-  const [month, setMonth] = useState(2);
-  const [tecs, setTecs] = useState([...DEF_TEC]);
-  const [aprs, setAprs] = useState([...DEF_APR]);
-  const [edits, setEdits] = useState({});
+  const [year, setYear] = useState(() => load("esc_year", 2026));
+  const [month, setMonth] = useState(() => load("esc_month", 2));
+  const [tecs, setTecs] = useState(() => load("esc_tecs", DEF_TEC));
+  const [aprs, setAprs] = useState(() => load("esc_aprs", DEF_APR));
+  const [allEdits, setAllEdits] = useState(() => load("esc_edits", {}));
   const [eCell, setECell] = useState(null);
   const [eVal, setEVal] = useState("");
   const [panel, setPanel] = useState(false);
@@ -91,6 +92,26 @@ export default function App() {
   const [ePer, setEPer] = useState(null);
   const [ePVal, setEPVal] = useState("");
   const [exp, setExp] = useState(false);
+  const [saved, setSaved] = useState(false);
+
+  useEffect(() => { save("esc_year", year); }, [year]);
+  useEffect(() => { save("esc_month", month); }, [month]);
+  useEffect(() => { save("esc_tecs", tecs); }, [tecs]);
+  useEffect(() => { save("esc_aprs", aprs); }, [aprs]);
+  useEffect(() => { save("esc_edits", allEdits); }, [allEdits]);
+
+  const flashSave = useCallback(() => { setSaved(true); setTimeout(() => setSaved(false), 1200); }, []);
+
+  const monthKey = `${year}-${String(month + 1).padStart(2, "0")}`;
+  const edits = allEdits[monthKey] || {};
+  const setEdits = useCallback((updater) => {
+    setAllEdits(prev => {
+      const current = prev[monthKey] || {};
+      const next = typeof updater === "function" ? updater(current) : updater;
+      return { ...prev, [monthKey]: next };
+    });
+    flashSave();
+  }, [monthKey, flashSave]);
 
   const raw = useMemo(() => genEvents(year, month), [year, month]);
   const schedule = useMemo(() => {
@@ -99,23 +120,27 @@ export default function App() {
   }, [raw, tecs, aprs, year, month, edits]);
   const weeks = useMemo(() => groupWeeks(schedule, year, month), [schedule, year, month]);
 
-  const prev = () => { if (month === 0) { setMonth(11); setYear(y => y - 1); } else setMonth(m => m - 1); setEdits({}); };
-  const next = () => { if (month === 11) { setMonth(0); setYear(y => y + 1); } else setMonth(m => m + 1); setEdits({}); };
+  const prev_ = () => { if (month === 0) { setMonth(11); setYear(y => y - 1); } else setMonth(m => m - 1); };
+  const next_ = () => { if (month === 11) { setMonth(0); setYear(y => y + 1); } else setMonth(m => m + 1); };
 
-  const addT = () => { const n = nT.trim(); if (n && !tecs.includes(n)) { setTecs(p => [...p, n]); setNT(""); } };
-  const rmT = i => setTecs(p => p.filter((_, j) => j !== i));
-  const addA = () => { const n = nA.trim(); if (n && !aprs.includes(n)) { setAprs(p => [...p, n]); setNA(""); } };
-  const rmA = i => setAprs(p => p.filter((_, j) => j !== i));
+  const addT = () => { const n = nT.trim(); if (n && !tecs.includes(n)) { setTecs(p => [...p, n]); setNT(""); flashSave(); } };
+  const rmT = i => { setTecs(p => p.filter((_, j) => j !== i)); flashSave(); };
+  const addA = () => { const n = nA.trim(); if (n && !aprs.includes(n)) { setAprs(p => [...p, n]); setNA(""); flashSave(); } };
+  const rmA = i => { setAprs(p => p.filter((_, j) => j !== i)); flashSave(); };
   const startEP = (t, i, n) => { setEPer({ t, i }); setEPVal(n); };
   const saveEP = () => {
     if (!ePer) return; const v = ePVal.trim(); if (!v) { setEPer(null); return; }
     if (ePer.t === "tec") setTecs(p => { const n = [...p]; n[ePer.i] = v; return n; });
     else setAprs(p => { const n = [...p]; n[ePer.i] = v; return n; });
-    setEPer(null);
+    setEPer(null); flashSave();
   };
 
   const startE = (id, f, v) => { setECell({ id, f }); setEVal(v || ""); };
-  const saveE = () => { if (!eCell) return; setEdits(p => ({ ...p, [eCell.id]: { ...(p[eCell.id] || {}), [eCell.f]: eVal } })); setECell(null); };
+  const saveE = () => {
+    if (!eCell) return;
+    setEdits(prev => ({ ...prev, [eCell.id]: { ...(prev[eCell.id] || {}), [eCell.f]: eVal } }));
+    setECell(null);
+  };
   const cancelE = () => setECell(null);
 
   const countFor = n => schedule.filter(ev => ev.tecnico === n || ev.aprendiz === n || (ev.tecnico && ev.tecnico.split(" e ").map(s => s.trim()).includes(n))).length;
@@ -128,48 +153,48 @@ export default function App() {
         const H = pad + 80 + weeks.length * (wkL + hH + wkG) + schedule.length * rH + sumH + pad + 20;
         const c = document.createElement("canvas"); const s = 2;
         c.width = W * s; c.height = H * s;
-        const x = c.getContext("2d"); x.scale(s, s);
-        x.fillStyle = "#0f172a"; x.fillRect(0, 0, W, H);
+        const ctx = c.getContext("2d"); ctx.scale(s, s);
+        ctx.fillStyle = "#0f172a"; ctx.fillRect(0, 0, W, H);
         let y = pad;
-        x.textAlign = "center"; x.fillStyle = "#e2e8f0"; x.font = "bold 20px system-ui";
-        x.fillText(`Escala de Som — ${MN[month]} ${year}`, W / 2, y + 22);
-        x.font = "12px system-ui"; x.fillStyle = "#64748b";
-        x.fillText("Técnicos & Aprendizes · Igreja", W / 2, y + 40); y += 56;
+        ctx.textAlign = "center"; ctx.fillStyle = "#e2e8f0"; ctx.font = "bold 20px system-ui";
+        ctx.fillText(`Escala de Som — ${MN[month]} ${year}`, W / 2, y + 22);
+        ctx.font = "12px system-ui"; ctx.fillStyle = "#64748b";
+        ctx.fillText("Técnicos & Aprendizes · Igreja", W / 2, y + 40); y += 56;
         const legs = [{ l: "Sexta · Connect Adoles", c: "#f59e0b" }, { l: "Sábado · Connect Jovens", c: "#ec4899" }, { l: "Domingo · Culto", c: "#3b82f6" }];
-        x.textAlign = "left"; let lx = W / 2 - 190;
-        legs.forEach(l => { x.fillStyle = l.c; x.beginPath(); x.arc(lx + 5, y, 4, 0, Math.PI * 2); x.fill(); x.fillStyle = "#94a3b8"; x.font = "11px system-ui"; x.fillText(l.l, lx + 14, y + 4); lx += 135; }); y += 24;
+        ctx.textAlign = "left"; let lx = W / 2 - 190;
+        legs.forEach(l => { ctx.fillStyle = l.c; ctx.beginPath(); ctx.arc(lx + 5, y, 4, 0, Math.PI * 2); ctx.fill(); ctx.fillStyle = "#94a3b8"; ctx.font = "11px system-ui"; ctx.fillText(l.l, lx + 14, y + 4); lx += 135; }); y += 24;
         const cX = [pad, pad + 90, pad + 195, pad + 370, pad + 560];
-        const cH = ["Data", "Evento", "Banda / GR", "Aprendiz", "Técnico"];
+        const cHd = ["Data", "Evento", "Banda / GR", "Aprendiz", "Técnico"];
         weeks.forEach((wk, wi) => {
           const f = wk[0].date, la = wk[wk.length - 1].date;
-          x.fillStyle = "#475569"; x.font = "bold 11px system-ui";
-          x.fillText(`SEMANA ${wi + 1} · ${f} a ${la}`, pad, y + 12); y += wkL;
-          x.fillStyle = "#3e4a5c"; x.font = "bold 9px system-ui";
-          cH.forEach((h, i) => x.fillText(h.toUpperCase(), cX[i], y + 10)); y += hH;
+          ctx.fillStyle = "#475569"; ctx.font = "bold 11px system-ui";
+          ctx.fillText(`SEMANA ${wi + 1} · ${f} a ${la}`, pad, y + 12); y += wkL;
+          ctx.fillStyle = "#3e4a5c"; ctx.font = "bold 9px system-ui";
+          cHd.forEach((h, i) => ctx.fillText(h.toUpperCase(), cX[i], y + 10)); y += hH;
           wk.forEach(ev => {
             const t = TH[ev.day] || TH.Domingo;
-            x.fillStyle = t.bg;
-            try { x.beginPath(); x.roundRect(pad - 4, y - 2, W - 2 * pad + 8, rH - 2, 5); x.fill(); } catch { x.fillRect(pad - 4, y - 2, W - 2 * pad + 8, rH - 2); }
-            x.fillStyle = t.accent; x.fillRect(pad - 4, y - 2, 3, rH - 2);
-            x.fillStyle = "#f1f5f9"; x.font = "bold 12px system-ui";
-            x.fillText(`${ev.date} ${ev.period}`, cX[0], y + 16);
-            x.font = "12px system-ui"; x.fillStyle = "#94a3b8"; x.fillText(ev.evento, cX[1], y + 16);
-            x.fillStyle = ev.gr ? "#e2e8f0" : "#3e4a5c"; x.fillText(ev.gr || "—", cX[2], y + 16);
-            x.fillStyle = ev.aprendiz ? "#e2e8f0" : "#3e4a5c"; x.fillText(ev.aprendiz || "—", cX[3], y + 16);
-            x.fillStyle = ev.tecnico ? "#e2e8f0" : "#3e4a5c"; x.fillText(ev.tecnico || "—", cX[4], y + 16);
+            ctx.fillStyle = t.bg;
+            try { ctx.beginPath(); ctx.roundRect(pad - 4, y - 2, W - 2 * pad + 8, rH - 2, 5); ctx.fill(); } catch { ctx.fillRect(pad - 4, y - 2, W - 2 * pad + 8, rH - 2); }
+            ctx.fillStyle = t.accent; ctx.fillRect(pad - 4, y - 2, 3, rH - 2);
+            ctx.fillStyle = "#f1f5f9"; ctx.font = "bold 12px system-ui";
+            ctx.fillText(`${ev.date} ${ev.period}`, cX[0], y + 16);
+            ctx.font = "12px system-ui"; ctx.fillStyle = "#94a3b8"; ctx.fillText(ev.evento, cX[1], y + 16);
+            ctx.fillStyle = ev.gr ? "#e2e8f0" : "#3e4a5c"; ctx.fillText(ev.gr || "—", cX[2], y + 16);
+            ctx.fillStyle = ev.aprendiz ? "#e2e8f0" : "#3e4a5c"; ctx.fillText(ev.aprendiz || "—", cX[3], y + 16);
+            ctx.fillStyle = ev.tecnico ? "#e2e8f0" : "#3e4a5c"; ctx.fillText(ev.tecnico || "—", cX[4], y + 16);
             y += rH;
           }); y += wkG;
         });
-        try { x.fillStyle = "rgba(255,255,255,0.04)"; x.beginPath(); x.roundRect(pad - 4, y, W - 2 * pad + 8, sumH - 10, 8); x.fill(); } catch {}
-        x.fillStyle = "#475569"; x.font = "bold 10px system-ui"; x.fillText("RESUMO", pad + 8, y + 18);
+        try { ctx.fillStyle = "rgba(255,255,255,0.04)"; ctx.beginPath(); ctx.roundRect(pad - 4, y, W - 2 * pad + 8, sumH - 10, 8); ctx.fill(); } catch {}
+        ctx.fillStyle = "#475569"; ctx.font = "bold 10px system-ui"; ctx.fillText("RESUMO", pad + 8, y + 18);
         let sx = pad + 8, sy = y + 36;
         [...tecs.map(n => ({ n, t: "TÉC" })), ...aprs.map(n => ({ n, t: "APR" }))].forEach(({ n, t }) => {
           const cnt = countFor(n); const lb = `${t} ${n}: ${cnt}`;
-          x.font = "11px system-ui"; const lw = x.measureText(lb).width + 20;
+          ctx.font = "11px system-ui"; const lw = ctx.measureText(lb).width + 20;
           if (sx + lw > W - pad) { sx = pad + 8; sy += 22; }
-          x.fillStyle = t === "TÉC" ? "rgba(99,102,241,0.15)" : "rgba(16,185,129,0.15)";
-          try { x.beginPath(); x.roundRect(sx, sy - 10, lw, 18, 6); x.fill(); } catch { x.fillRect(sx, sy - 10, lw, 18); }
-          x.fillStyle = t === "TÉC" ? "#818cf8" : "#34d399"; x.fillText(lb, sx + 6, sy + 2); sx += lw + 8;
+          ctx.fillStyle = t === "TÉC" ? "rgba(99,102,241,0.15)" : "rgba(16,185,129,0.15)";
+          try { ctx.beginPath(); ctx.roundRect(sx, sy - 10, lw, 18, 6); ctx.fill(); } catch { ctx.fillRect(sx, sy - 10, lw, 18); }
+          ctx.fillStyle = t === "TÉC" ? "#818cf8" : "#34d399"; ctx.fillText(lb, sx + 6, sy + 2); sx += lw + 8;
         });
         const link = document.createElement("a");
         link.download = `escala-som-${MN[month].toLowerCase()}-${year}.png`;
@@ -184,7 +209,6 @@ export default function App() {
 
   return (
     <div style={{ minHeight: "100vh", background: "linear-gradient(145deg,#0f172a 0%,#1e293b 50%,#0f172a 100%)", fontFamily: "'Segoe UI',system-ui,sans-serif", color: "#e2e8f0", padding: "20px 16px" }}>
-      {/* Header */}
       <div style={{ maxWidth: 960, margin: "0 auto", display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16, flexWrap: "wrap", gap: 10 }}>
         <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
           <span style={{ fontSize: 26 }}>🎚️</span>
@@ -193,23 +217,22 @@ export default function App() {
             <p style={{ margin: 0, fontSize: 12, color: "#64748b" }}>Técnicos & Aprendizes · Igreja</p>
           </div>
         </div>
-        <div style={{ display: "flex", gap: 8 }}>
+        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+          <span style={{ fontSize: 12, color: "#10b981", fontWeight: 600, opacity: saved ? 1 : 0, transition: "opacity 0.3s" }}>✓ Salvo</span>
           <button onClick={() => setPanel(!panel)} style={{ background: panel ? "rgba(99,102,241,0.25)" : "rgba(255,255,255,0.06)", border: "1px solid rgba(255,255,255,0.12)", borderRadius: 8, padding: "8px 16px", color: "#e2e8f0", cursor: "pointer", fontSize: 13, fontWeight: 500 }}>⚙️ Equipe</button>
           <button onClick={exportPNG} disabled={exp} style={{ background: "rgba(16,185,129,0.15)", border: "1px solid rgba(16,185,129,0.3)", borderRadius: 8, padding: "8px 16px", color: "#10b981", cursor: "pointer", fontSize: 13, fontWeight: 600, opacity: exp ? 0.5 : 1 }}>{exp ? "⏳..." : "📷 PNG"}</button>
         </div>
       </div>
 
-      {/* Month nav */}
       <div style={{ maxWidth: 960, margin: "0 auto 20px", display: "flex", justifyContent: "center", alignItems: "center", gap: 20 }}>
-        <button onClick={prev} style={{ background: "rgba(255,255,255,0.06)", border: "1px solid rgba(255,255,255,0.1)", borderRadius: 8, padding: "8px 16px", color: "#e2e8f0", cursor: "pointer", fontSize: 20, fontWeight: 700, lineHeight: 1 }}>‹</button>
+        <button onClick={prev_} style={{ background: "rgba(255,255,255,0.06)", border: "1px solid rgba(255,255,255,0.1)", borderRadius: 8, padding: "8px 16px", color: "#e2e8f0", cursor: "pointer", fontSize: 20, fontWeight: 700, lineHeight: 1 }}>‹</button>
         <div style={{ textAlign: "center", minWidth: 220 }}>
           <div style={{ fontSize: 24, fontWeight: 700, color: "#f1f5f9" }}>{MN[month]}</div>
           <div style={{ fontSize: 14, color: "#64748b", fontWeight: 500 }}>{year}</div>
         </div>
-        <button onClick={next} style={{ background: "rgba(255,255,255,0.06)", border: "1px solid rgba(255,255,255,0.1)", borderRadius: 8, padding: "8px 16px", color: "#e2e8f0", cursor: "pointer", fontSize: 20, fontWeight: 700, lineHeight: 1 }}>›</button>
+        <button onClick={next_} style={{ background: "rgba(255,255,255,0.06)", border: "1px solid rgba(255,255,255,0.1)", borderRadius: 8, padding: "8px 16px", color: "#e2e8f0", cursor: "pointer", fontSize: 20, fontWeight: 700, lineHeight: 1 }}>›</button>
       </div>
 
-      {/* Panel */}
       {panel && (
         <div style={{ maxWidth: 960, margin: "0 auto 24px", background: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,255,255,0.08)", borderRadius: 14, padding: 20, display: "grid", gridTemplateColumns: "1fr 1fr", gap: 24 }}>
           <div>
@@ -249,13 +272,12 @@ export default function App() {
             </div>
           </div>
           <div style={{ gridColumn: "1/-1", textAlign: "center", paddingTop: 4 }}>
-            <button onClick={() => setEdits({})} style={{ background: "linear-gradient(135deg,#6366f1,#8b5cf6)", border: "none", borderRadius: 8, padding: "10px 28px", color: "#fff", cursor: "pointer", fontSize: 14, fontWeight: 600 }}>🔄 Regerar Rodízio</button>
-            <p style={{ fontSize: 11, color: "#64748b", marginTop: 6 }}>Limpa edições manuais e redistribui</p>
+            <button onClick={() => { setEdits({}); flashSave(); }} style={{ background: "linear-gradient(135deg,#6366f1,#8b5cf6)", border: "none", borderRadius: 8, padding: "10px 28px", color: "#fff", cursor: "pointer", fontSize: 14, fontWeight: 600 }}>🔄 Regerar Rodízio</button>
+            <p style={{ fontSize: 11, color: "#64748b", marginTop: 6 }}>Limpa edições manuais deste mês e redistribui</p>
           </div>
         </div>
       )}
 
-      {/* Schedule */}
       <div style={{ maxWidth: 960, margin: "0 auto" }}>
         <div style={{ display: "flex", gap: 16, marginBottom: 16, flexWrap: "wrap", justifyContent: "center" }}>
           {[{ l: "Sexta · Connect Adoles", c: "#f59e0b" }, { l: "Sábado · Connect Jovens", c: "#ec4899" }, { l: "Domingo · Culto", c: "#3b82f6" }].map(x => (
@@ -333,7 +355,6 @@ export default function App() {
           );
         })}
 
-        {/* Summary */}
         <div style={{ background: "rgba(255,255,255,0.03)", border: "1px solid rgba(255,255,255,0.06)", borderRadius: 12, padding: "18px 20px", marginTop: 8 }}>
           <h3 style={{ margin: "0 0 12px", fontSize: 12, fontWeight: 700, color: "#64748b", textTransform: "uppercase" }}>📊 Resumo — {MN[month]} {year}</h3>
           <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
@@ -352,7 +373,7 @@ export default function App() {
       </div>
 
       <p style={{ textAlign: "center", color: "#3e4a5c", fontSize: 11, marginTop: 20 }}>
-        Semana: Segunda a Domingo · ‹ › navegar meses · Clique para editar · 📷 exporta PNG
+        Dados salvos automaticamente no navegador · ‹ › meses · Clique para editar · 📷 PNG
       </p>
     </div>
   );
